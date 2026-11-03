@@ -71,10 +71,11 @@ https://YOUR-USERNAME.github.io/speed-dating/
 
 1. **Doors open:** Put the host page on a laptop or tablet by the entrance (or print the QR code). Guests scan, check in, confirm they're 21+, and get a badge number for their name tag. Keep the host page open; it's what hands out badge numbers.
 2. **No phone?** Use "Add someone without a phone" on the host page. Give them a paper scorecard.
-3. **Start round 1:** Check-in closes. Every phone shows "Table 4, you're meeting Alex" with a countdown. Your screen shows every table, which is great for projecting.
-4. **Each round:** Hit **Start round 2**, **Start round 3**, and so on. Guests can mark Date/Friend/Pass right after each date while it's fresh.
-5. **After the last round:** Click **End rounds and open final picks**. Guests review and tap **Send my picks**. Enter any paper cards using "Enter a paper scorecard."
-6. **Reveal:** Click **Reveal matches**. Every phone shows that person's mutual matches with contact info. Copy messages for anyone without a phone.
+3. **Big crowd? Split it up:** Before starting, set **Groups** on the host page (try 2 or 3 for 30+ people). Guests are split at random when you start, and they only meet people in their own group, so everyone gets through their whole group in fewer rounds. Everyone can stay in one room: table numbers don't overlap between groups. You can also lower **Rounds** so each person meets fewer people.
+4. **Start round 1:** Check-in closes. Every phone shows "Table 4, you're meeting Alex" with a countdown. Your screen shows every table, which is great for projecting.
+5. **Each round:** Hit **Start round 2**, **Start round 3**, and so on. Guests can mark Date/Friend/Pass right after each date while it's fresh.
+6. **After the last round:** Click **End rounds and open final picks**. Guests review and tap **Send my picks**. Enter any paper cards using "Enter a paper scorecard."
+7. **Reveal:** Click **Reveal matches**. Every phone shows that person's mutual matches with contact info. Copy messages for anyone without a phone.
 
 **What's private:** Guests can see the names, pronouns, and badge numbers of people at the same event. Contact info and picks are visible only to that guest and you. Contact info is only shared with mutual matches at reveal.
 

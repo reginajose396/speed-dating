@@ -16,7 +16,7 @@
   <div id="app"></div>
 </main>
 <script type="module">
-import { auth, db, $, esc, toast, seatFor, metIds, pickListHTML } from "./shared.js";
+import { auth, db, $, esc, toast, seatFor, metIds, pickListHTML, groupOf, groupName } from "./shared.js";
 import { signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -97,14 +97,15 @@ const waitingHTML = () => `<div class="panel"><h2>You’re checked in</h2><p cla
 function roundsHTML() {
   const r = ev.currentRound || 0, round = (ev.rounds || [])[r];
   if (!round) return waitingHTML();
-  const { partner, table } = seatFor(round, uid), p = partner ? guests[partner] : null;
+  const { partner, table } = seatFor(round, uid), p = partner ? guests[partner] : null, grp = groupOf(ev.rounds, uid);
+  const moreDates = ev.rounds.slice(r + 1).some(x => seatFor(x, uid).partner);
   const seat = partner
     ? `<div class="seat"><div class="g-meta">Head to</div><div class="table-no">Table ${table}</div>
        <div class="g-meta">You’re meeting</div><div class="partner">${esc(p?.name || "your date")}${p?.pronouns ? ` <span class="g-meta">(${esc(p.pronouns)})</span>` : ""}</div>
        <div class="g-meta">Badge #${p?.badge ?? "?"}</div></div>`
-    : `<div class="seat"><div class="table-no">Break</div><p class="hint" style="margin:0 auto">You’re sitting this round out. Refill your drink and you’re back next round.</p></div>`;
+    : `<div class="seat"><div class="table-no">Break</div><p class="hint" style="margin:0 auto">${moreDates ? "You’re sitting this round out. Refill your drink and you’re back next round." : "That’s all your dates for tonight. Refill your drink. Final picks open soon."}</p></div>`;
   const met = metIds(ev.rounds, uid, r);
-  return `<div class="panel"><div class="row" style="justify-content:space-between"><b>Round ${r + 1} of ${ev.rounds.length}</b>
+  return `<div class="panel"><div class="row" style="justify-content:space-between"><b>Round ${r + 1} of ${ev.rounds.length}${grp != null ? ` · ${groupName(grp)}` : ""}</b>
       ${ev.roundEndsAt ? `<span class="pill wait">time left</span>` : ""}</div>
     ${ev.roundEndsAt ? `<div class="timer" data-ends="${ev.roundEndsAt}"></div>` : `<div style="height:12px"></div>`}
     ${seat}</div>

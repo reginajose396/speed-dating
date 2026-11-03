@@ -69,13 +69,13 @@
 </main>
 
 <script type="module">
-import { auth, db, $, esc, toast, makeRounds, maxRounds, metIds, computeMatches, pickListHTML } from "./shared.js";
+import { auth, db, $, esc, toast, makeGroupRounds, maxGroupRounds, maxGroups, groupSizes, groupName, groupOf, metIds, computeMatches, pickListHTML } from "./shared.js";
 import { HOST_UID } from "./firebase-config.js";
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 let code = localStorage.getItem("ssd-host-code") || "";
-let ev = null, guests = {}, picks = {}, priv = {}, unsubs = [], assigning = false;
+let ev = null, guests = {}, picks = {}, priv = {}, unsubs = [], assigning = false, groupCount = 1, roundCount = 0;
 const show = id => ["login", "chooser", "dash"].forEach(x => $(x).hidden = x !== id);
 const sorted = () => Object.entries(guests).sort((a, b) => (a[1].badge ?? 1e9) - (b[1].badge ?? 1e9) || (a[1].joinedAt?.seconds ?? 0) - (b[1].joinedAt?.seconds ?? 0));
 const nameOf = id => guests[id] ? `#${guests[id].badge ?? "?"} ${guests[id].name}` : "(left)";
@@ -110,6 +110,7 @@ $("openForm").onsubmit = async e => {
 
 function openEvent(c) {
   code = c; localStorage.setItem("ssd-host-code", c); show("dash");
+  groupCount = 1; roundCount = 0;
   unsubs.forEach(f => f()); unsubs = [];
   unsubs.push(onSnapshot(doc(db, "events", c), s => { if (!s.exists()) return $("switchEvent").click(); ev = s.data(); renderAll(); }));
   unsubs.push(onSnapshot(collection(db, "events", c, "guests"), qs => { guests = {}; qs.forEach(d => guests[d.id] = d.data()); assignBadges(); renderAll(); }));
@@ -145,13 +146,25 @@ function renderJoin() {
   $("copyLink").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Link copied"));
 }
 
+// The groups and rounds the host has chosen, kept in range as guests check in.
+function plan(n) {
+  const groups = Math.max(1, Math.min(groupCount, maxGroups(n))), most = maxGroupRounds(n, groups);
+  return { groups, most, rounds: roundCount ? Math.min(roundCount, most) : most };
+}
+function planHint(n) {
+  const { groups, most } = plan(n), sizes = [...new Set(groupSizes(n, groups))].sort((a, b) => a - b).join(" or ");
+  const who = groups > 1 ? `Split into ${groups} random groups of ${sizes}, meeting everyone in your group takes` : "Everyone meeting everyone takes";
+  return `${n} checked in. ${who} ${most} rounds, about ${most * ev.roundLen} minutes. Starting closes check-in.`;
+}
+
 function renderControls() {
   const n = Object.keys(guests).length, s = ev.status, total = (ev.rounds || []).length, r = ev.currentRound || 0;
-  const sent = Object.values(picks).filter(p => p.submitted).length;
+  const sent = Object.values(picks).filter(p => p.submitted).length, chosen = plan(n);
   let html = "";
   if (s === "checkin") html = `<h2>Ready to start?</h2>
-    <p class="hint">${n} checked in. Everyone meeting everyone takes ${maxRounds(n)} rounds, about ${maxRounds(n) * ev.roundLen} minutes. Starting closes check-in.</p>
-    <div class="row" style="align-items:flex-end"><div><label for="rCount">Rounds</label><input id="rCount" type="number" min="1" max="${maxRounds(n) || 1}" value="${maxRounds(n)}" style="width:110px"></div>
+    <p class="hint" id="planHint">${esc(planHint(n))}</p>
+    <div class="row" style="align-items:flex-end"><div><label for="gCountIn">Groups</label><input id="gCountIn" type="number" min="1" max="${maxGroups(n)}" value="${chosen.groups}" style="width:110px"></div>
+    <div><label for="rCount">Rounds</label><input id="rCount" type="number" min="1" max="${chosen.most || 1}" value="${chosen.rounds}" style="width:110px"></div>
     <div><label for="rLen">Minutes each</label><input id="rLen" type="number" min="1" max="30" value="${ev.roundLen}" style="width:110px"></div>
     <button class="primary" id="startBtn" ${n < 2 ? "disabled" : ""}>Start round 1</button></div>`;
   else if (s === "rounds") html = `<h2>Round ${r + 1} of ${total}</h2>
@@ -164,10 +177,21 @@ function renderControls() {
   $("sControls").innerHTML = html;
 
   const on = (id, fn) => { const b = $(id); if (b) b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { toast("That didn’t go through. Try again."); } b.disabled = false; }; };
+  if ($("gCountIn")) {
+    // Update in place: a full re-render here would swallow a click on Start round 1.
+    $("gCountIn").oninput = () => {
+      groupCount = +$("gCountIn").value || 1; roundCount = 0;
+      const { most } = plan(n);
+      $("rCount").max = most || 1; $("rCount").value = most;
+      $("planHint").textContent = planHint(n);
+    };
+    $("rCount").oninput = () => { roundCount = +$("rCount").value || 0; };
+  }
   on("startBtn", async () => {
-    const ids = sorted().map(([id]) => id), len = Math.max(1, +$("rLen").value || 5);
-    if (!confirm(`Start with ${ids.length} guests? Check-in will close.`)) return;
-    await updateDoc(ref(), { rounds: makeRounds(ids, +$("rCount").value || maxRounds(ids.length)), roundLen: len, currentRound: 0, status: "rounds", roundEndsAt: Date.now() + len * 60000 });
+    const ids = sorted().map(([id]) => id), len = Math.max(1, +$("rLen").value || 5), { groups, most } = plan(ids.length);
+    const count = Math.min(+$("rCount").value || most, most);
+    if (!confirm(`Start with ${ids.length} guests${groups > 1 ? ` in ${groups} groups` : ""} and ${count} rounds? Check-in will close.`)) return;
+    await updateDoc(ref(), { rounds: makeGroupRounds(ids, groups, count), roundLen: len, currentRound: 0, status: "rounds", roundEndsAt: Date.now() + len * 60000 });
   });
   on("restartBtn", () => updateDoc(ref(), { roundEndsAt: Date.now() + ev.roundLen * 60000 }));
   on("nextBtn", () => updateDoc(ref(), { currentRound: r + 1, roundEndsAt: Date.now() + ev.roundLen * 60000 }));
@@ -182,9 +206,10 @@ function renderRound() {
   if (ev.status !== "rounds") { box.hidden = true; return; }
   box.hidden = false;
   const round = ev.rounds[ev.currentRound || 0];
-  const tables = round.t.filter(p => p.a && p.b), breaks = round.t.filter(p => !p.b).map(p => p.a);
+  const tables = round.t.filter(p => p.a && p.b), seated = new Set(tables.flatMap(p => [p.a, p.b]));
+  const breaks = sorted().map(([id]) => id).filter(id => !seated.has(id));
   box.innerHTML = `${ev.roundEndsAt ? `<div class="timer" data-ends="${ev.roundEndsAt}"></div>` : ""}
-    <div class="tables">${tables.map((p, i) => `<div class="table-card"><div class="tn">Table ${i + 1}</div><div class="pair">${esc(nameOf(p.a))} &amp; ${esc(nameOf(p.b))}</div></div>`).join("")}</div>
+    <div class="tables">${tables.map((p, i) => `<div class="table-card"><div class="tn">Table ${i + 1}${p.g != null ? ` · ${groupName(p.g)}` : ""}</div><div class="pair">${esc(nameOf(p.a))} &amp; ${esc(nameOf(p.b))}</div></div>`).join("")}</div>
     ${breaks.length ? `<p class="hint" style="margin-top:12px">On a break: ${breaks.map(id => esc(nameOf(id))).join(", ")}</p>` : ""}`;
 }
 
@@ -192,9 +217,9 @@ function renderGuests() {
   const list = sorted();
   $("gCount").textContent = `(${list.length})`;
   $("sGuests").innerHTML = list.length ? list.map(([id, g]) => {
-    const p = picks[id], st = p?.submitted ? `<span class="pill friend">Picks sent</span>` : p ? `<span class="pill wait">Picking</span>` : "";
+    const p = picks[id], st = p?.submitted ? `<span class="pill friend">Picks sent</span>` : p ? `<span class="pill wait">Picking</span>` : "", grp = groupOf(ev.rounds, id);
     return `<li><span class="badge">${g.badge ?? "…"}</span><div class="g-main"><div class="g-name">${esc(g.name)}${g.pronouns ? ` <span class="g-meta">(${esc(g.pronouns)})</span>` : ""}</div>
-      <div class="g-meta">${priv[id] ? esc(priv[id]) : "No contact shared"}</div></div>${st}
+      <div class="g-meta">${priv[id] ? esc(priv[id]) : "No contact shared"}</div></div>${grp != null ? `<span class="pill wait">${groupName(grp)}</span>` : ""}${st}
       <button class="small quiet" data-remove="${id}">Remove</button></li>`;
   }).join("") : `<li class="empty">Nobody yet. Put the QR code up where people walk in.</li>`;
   $("sGuests").querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {

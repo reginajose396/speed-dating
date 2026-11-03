@@ -38,6 +38,21 @@ export function makeRounds(ids, count) {
 }
 export const maxRounds = n => n < 2 ? 0 : (n % 2 ? n : n - 1);
 
+// Groups: random and even, each running its own rotation, so nobody meets anyone outside their group.
+// Bigger groups come first and tables number straight through, so each group keeps the same tables all night.
+export const maxGroups = n => Math.max(1, Math.min(8, Math.floor(n / 2)));
+export const groupSizes = (n, groups) => Array.from({ length: groups }, (_, i) => Math.floor(n / groups) + (i < n % groups ? 1 : 0));
+export const maxGroupRounds = (n, groups) => Math.max(...groupSizes(n, groups).map(maxRounds));
+export function makeGroupRounds(ids, groups, count) {
+  if (groups < 2) return makeRounds(ids, count);
+  const pool = shuffle(ids);
+  const each = groupSizes(ids.length, groups).map((size, g) => makeRounds(pool.splice(0, size), count).map(r => r.t.map(p => ({ ...p, g }))));
+  return Array.from({ length: Math.max(...each.map(e => e.length)) }, (_, r) => ({ t: each.flatMap(e => e[r] || []) }));
+}
+export const groupName = g => `Group ${String.fromCharCode(65 + g)}`;
+// Everyone has a spot in round 1, so that says which group they're in. Null if the night isn't split up.
+export const groupOf = (rounds, uid) => (rounds?.[0]?.t || []).find(p => p.a === uid || p.b === uid)?.g ?? null;
+
 // Who this person is seated with in a round: {partner, table} or {partner:null} for a break.
 export function seatFor(round, uid) {
   let table = 0;
