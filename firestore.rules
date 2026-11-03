@@ -4,7 +4,7 @@ service cloud.firestore {
 
     function signedIn() { return request.auth != null; }
     // Replace with your host account's User UID (README step 3).
-    function isHost() { return signedIn() && request.auth.uid == 'PASTE_HOST_UID'; }
+    function isHost() { return signedIn() && request.auth.uid == '9vunUlgeTld9s5ikeJOmDlsKpJE2'; }
     function eventData(e) { return get(/databases/$(database)/documents/events/$(e)).data; }
     function isGuest(e) { return signedIn() && exists(/databases/$(database)/documents/events/$(e)/guests/$(request.auth.uid)); }
 

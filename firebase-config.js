@@ -10,4 +10,4 @@ export const firebaseConfig = {
 
 // Step 3 of the README: your host account's User UID from Firebase Authentication.
 // Paste the same value into firestore.rules.
-export const HOST_UID = "PASTE_HOST_UID";
+export const HOST_UID = "9vunUlgeTld9s5ikeJOmDlsKpJE2";
