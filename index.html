@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sapphic Speed Dating</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<main class="wrap narrow">
+  <h1 id="title">Speed Dating</h1>
+  <p class="sub" id="subtitle">Loading…</p>
+  <div id="app"></div>
+</main>
+<script type="module">
+import { auth, db, $, esc, toast, seatFor, metIds, pickListHTML } from "./shared.js";
+import { signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { doc, getDoc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const params = new URLSearchParams(location.search);
+let code = (params.get("e") || localStorage.getItem("ssd-code") || "").trim().toUpperCase();
+let uid = null, ev = null, me = null, guests = {}, picks = {}, submitted = false, results = null;
+let unsubs = [], guestsUnsub = null, lastKey = "";
+const app = $("app");
+
+onAuthStateChanged(auth, u => { if (u && !uid) { uid = u.uid; start(); } });
+signInAnonymously(auth).catch(() => { $("subtitle").innerHTML = `<span class="err">Couldn’t connect. Check your signal and refresh.</span>`; });
+
+function start() { code ? connect() : askCode(); }
+
+function askCode(msg = "") {
+  lastKey = "code";
+  $("subtitle").textContent = "Enter the event code from the host.";
+  app.innerHTML = `<form class="panel" id="codeForm">
+    ${msg ? `<p class="err">${esc(msg)}</p>` : ""}
+    <label for="codeIn">Event code</label>
+    <input id="codeIn" autocapitalize="characters" autocomplete="off" required placeholder="LILAC">
+    <button class="primary block">Join</button></form>`;
+  $("codeForm").onsubmit = e => { e.preventDefault(); code = $("codeIn").value.trim().toUpperCase(); connect(); };
+}
+
+async function connect() {
+  unsubs.forEach(f => f()); unsubs = [];
+  if (guestsUnsub) { guestsUnsub(); guestsUnsub = null; }
+  const evRef = doc(db, "events", code);
+  let snap;
+  try { snap = await getDoc(evRef); } catch (e) { snap = null; }
+  if (!snap || !snap.exists()) { localStorage.removeItem("ssd-code"); code = ""; return askCode("We couldn’t find that code. Double-check it with the host."); }
+  localStorage.setItem("ssd-code", code);
+  const base = ["events", code];
+  unsubs.push(onSnapshot(evRef, s => { ev = s.data(); render(); }));
+  unsubs.push(onSnapshot(doc(db, ...base, "guests", uid), s => {
+    me = s.exists() ? s.data() : null;
+    if (me && !guestsUnsub) {
+      guestsUnsub = onSnapshot(collection(db, ...base, "guests"), qs => { guests = {}; qs.forEach(d => guests[d.id] = d.data()); render(); }, () => {});
+      unsubs.push(onSnapshot(doc(db, ...base, "picks", uid), s => { picks = s.exists() ? (s.data().picks || {}) : {}; submitted = s.exists() && !!s.data().submitted; render(); }, () => {}));
+      unsubs.push(onSnapshot(doc(db, ...base, "results", uid), s => { results = s.exists() ? s.data() : null; render(); }, () => {}));
+    }
+    render();
+  }, () => {}));
+}
+
+function render() {
+  if (!ev) return;
+  $("title").textContent = ev.name || "Speed Dating";
+  let key, html;
+  if (!me) {
+    if (ev.status !== "checkin") { key = "closed"; html = `<div class="panel"><h2>Check-in has closed</h2><p class="hint">Find the host and they’ll add you to the night.</p></div>`; }
+    else { key = "join"; html = joinHTML(); }
+    $("subtitle").textContent = "Check in to get your badge number.";
+  } else {
+    key = "in";
+    $("subtitle").textContent = `Hi ${me.name}!`;
+    html = badgeHTML() + ({ checkin: waitingHTML, rounds: roundsHTML, picking: pickingHTML, revealed: revealedHTML }[ev.status] || waitingHTML)();
+  }
+  if (key === "join" && lastKey === "join") return; // don't wipe what someone is typing
+  lastKey = key; app.innerHTML = html; bind(key);
+}
+
+function joinHTML() {
+  return `<form class="panel" id="joinForm">
+    <h2>Check in</h2>
+    <p class="hint">Your contact info is only shared with people you match with.</p>
+    <label for="jName">First name (or what you go by)</label><input id="jName" required maxlength="40" autocomplete="given-name">
+    <label for="jPro">Pronouns</label><input id="jPro" maxlength="30" placeholder="she/her">
+    <label for="jContact">Contact to share with matches</label><input id="jContact" maxlength="120" placeholder="Instagram, phone or email">
+    <label class="check" style="margin-top:16px"><input type="checkbox" id="jAge" required> I’m 21 or older</label>
+    <button class="primary block" id="joinBtn">Check in</button></form>`;
+}
+const badgeHTML = () => `<div class="panel row"><div class="grow"><div class="g-meta">Your badge number</div>
+  <div class="big-badge">${me.badge ?? "…"}</div></div><div class="g-meta" style="max-width:20ch">${me.badge ? "Write it on your name tag." : "Your number appears in a moment."}</div></div>`;
+const waitingHTML = () => `<div class="panel"><h2>You’re checked in</h2><p class="hint">Grab a drink and get comfy. When the first round starts, this screen will tell you where to sit and who you’re meeting. Keep it open.</p></div>`;
+
+function roundsHTML() {
+  const r = ev.currentRound || 0, round = (ev.rounds || [])[r];
+  if (!round) return waitingHTML();
+  const { partner, table } = seatFor(round, uid), p = partner ? guests[partner] : null;
+  const seat = partner
+    ? `<div class="seat"><div class="g-meta">Head to</div><div class="table-no">Table ${table}</div>
+       <div class="g-meta">You’re meeting</div><div class="partner">${esc(p?.name || "your date")}${p?.pronouns ? ` <span class="g-meta">(${esc(p.pronouns)})</span>` : ""}</div>
+       <div class="g-meta">Badge #${p?.badge ?? "?"}</div></div>`
+    : `<div class="seat"><div class="table-no">Break</div><p class="hint" style="margin:0 auto">You’re sitting this round out. Refill your drink and you’re back next round.</p></div>`;
+  const met = metIds(ev.rounds, uid, r);
+  return `<div class="panel"><div class="row" style="justify-content:space-between"><b>Round ${r + 1} of ${ev.rounds.length}</b>
+      ${ev.roundEndsAt ? `<span class="pill wait">time left</span>` : ""}</div>
+    ${ev.roundEndsAt ? `<div class="timer" data-ends="${ev.roundEndsAt}"></div>` : `<div style="height:12px"></div>`}
+    ${seat}</div>
+    <div class="panel"><h2>Your picks so far</h2><p class="hint">Mark people as you go. Nobody sees your picks. You only learn about mutual ones.</p>
+    ${pickListHTML(met, guests, picks, "Your first date’s name will show up here.")}</div>`;
+}
+
+function pickingHTML() {
+  const met = metIds(ev.rounds, uid);
+  return `<div class="panel"><h2>Last call on picks</h2><p class="hint">Who do you want to see again? Choose Date, Friend, or Pass for each person, then send your picks.</p>
+    ${pickListHTML(met, guests, picks)}
+    <button class="primary block" id="sendPicks">${submitted ? "Picks sent ✓ (tap to resend)" : "Send my picks"}</button>
+    ${submitted ? `<p class="hint" style="margin-top:10px">You can still change them until the host reveals matches.</p>` : ""}</div>`;
+}
+
+function revealedHTML() {
+  if (!results) return `<div class="panel"><h2>Matches are on the way</h2><p class="hint">Hang tight, the host is sending them out.</p></div>`;
+  const ms = results.matches || [];
+  if (!ms.length) return `<div class="panel"><h2>No mutual matches this time</h2><p class="hint">Thank you so much for coming. We’d love to see you at the next one.</p></div>`;
+  return `<div class="panel"><h2>Your matches</h2><p class="hint">Both of you picked each other. Reach out!</p>
+    ${ms.map(m => `<div class="match-card"><div class="row"><span class="g-name grow">${esc(m.name)}${m.pronouns ? ` <span class="g-meta">(${esc(m.pronouns)})</span>` : ""}</span>
+      <span class="pill ${m.type}">${m.type === "date" ? "Date" : "Friend"}</span></div>
+      <div class="g-meta">${m.contact ? esc(m.contact) : "No contact shared. Ask the host."}</div></div>`).join("")}</div>`;
+}
+
+function bind(key) {
+  if (key === "join") {
+    $("joinForm").onsubmit = async e => {
+      e.preventDefault(); $("joinBtn").disabled = true;
+      try {
+        await setDoc(doc(db, "events", code, "private", uid), { contact: $("jContact").value.trim() });
+        await setDoc(doc(db, "events", code, "guests", uid), { name: $("jName").value.trim(), pronouns: $("jPro").value.trim(), joinedAt: serverTimestamp() });
+        lastKey = "";
+      } catch (err) { $("joinBtn").disabled = false; toast("Couldn’t check in. Check-in may have closed — find the host."); }
+    };
+  }
+  app.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => savePick(b.dataset.pick, b.dataset.v));
+  const send = $("sendPicks");
+  if (send) send.onclick = async () => { await writePicks(true); toast("Picks sent"); };
+}
+
+async function writePicks(sub = submitted) {
+  try { await setDoc(doc(db, "events", code, "picks", uid), { picks, submitted: sub, updatedAt: serverTimestamp() }); }
+  catch (e) { toast("Picks are locked now."); }
+}
+function savePick(id, v) {
+  picks = { ...picks }; if (v) picks[id] = v; else delete picks[id];
+  render(); writePicks();
+}
+</script>
+</body>
+</html>

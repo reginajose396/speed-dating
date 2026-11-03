@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Host · Sapphic Speed Dating</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+</head>
+<body>
+<main class="wrap">
+  <h1 id="title">Host dashboard</h1>
+  <p class="sub" id="subtitle">Loading…</p>
+
+  <div id="login" hidden>
+    <form class="panel" id="loginForm" style="max-width:420px">
+      <h2>Host sign in</h2>
+      <label for="email">Email</label><input id="email" type="email" required autocomplete="username">
+      <label for="pw">Password</label><input id="pw" type="password" required autocomplete="current-password">
+      <button class="primary block">Sign in</button>
+      <p class="err" id="loginErr"></p>
+    </form>
+  </div>
+
+  <div id="chooser" hidden>
+    <form class="panel" id="createForm">
+      <h2>Create an event</h2>
+      <label for="cName">Event name</label><input id="cName" required value="Sapphic Speed Dating">
+      <label for="cLen">Minutes per round</label><input id="cLen" type="number" min="1" max="30" value="5" style="max-width:140px">
+      <button class="primary block" style="max-width:240px">Create event</button>
+    </form>
+    <form class="panel" id="openForm">
+      <h2>Open an existing event</h2>
+      <label for="oCode">Event code</label><input id="oCode" required autocapitalize="characters" style="max-width:200px">
+      <button class="block" style="max-width:240px">Open</button>
+    </form>
+  </div>
+
+  <div id="dash" hidden>
+    <div class="panel" id="sJoin"></div>
+    <div class="panel" id="sControls"></div>
+    <div class="panel" id="sRound" hidden></div>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Guests <span class="g-meta" id="gCount"></span></h2></div>
+      <p class="hint">Badge numbers are assigned in order as people check in. Keep this page open during check-in.</p>
+      <ul class="list" id="sGuests"></ul>
+      <form id="walkinForm" class="row" style="margin-top:14px;align-items:flex-end">
+        <div class="grow"><label for="wName">Add someone without a phone</label><input id="wName" required placeholder="Name"></div>
+        <div style="flex:0 1 120px"><input id="wPro" placeholder="Pronouns"></div>
+        <div class="grow"><input id="wContact" placeholder="Contact to share"></div>
+        <button class="small">Add</button>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Enter a paper scorecard</h2>
+      <p class="hint">For guests without a phone, or to fix someone’s picks.</p>
+      <select id="cardWho"></select>
+      <div id="cardPanel" style="margin-top:12px"></div>
+    </div>
+    <div class="panel" id="sResults" hidden></div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="quiet small" id="switchEvent">Switch event</button>
+      <button class="quiet small" id="signOutBtn">Sign out</button>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+import { auth, db, $, esc, toast, makeRounds, maxRounds, metIds, computeMatches, pickListHTML } from "./shared.js";
+import { HOST_UID } from "./firebase-config.js";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+let code = localStorage.getItem("ssd-host-code") || "";
+let ev = null, guests = {}, picks = {}, priv = {}, unsubs = [], assigning = false;
+const show = id => ["login", "chooser", "dash"].forEach(x => $(x).hidden = x !== id);
+const sorted = () => Object.entries(guests).sort((a, b) => (a[1].badge ?? 1e9) - (b[1].badge ?? 1e9) || (a[1].joinedAt?.seconds ?? 0) - (b[1].joinedAt?.seconds ?? 0));
+const nameOf = id => guests[id] ? `#${guests[id].badge ?? "?"} ${guests[id].name}` : "(left)";
+const ref = (...p) => doc(db, "events", code, ...p);
+
+onAuthStateChanged(auth, u => {
+  unsubs.forEach(f => f()); unsubs = [];
+  if (!u || u.isAnonymous) { show("login"); $("subtitle").textContent = "Sign in with your host account."; return; }
+  if (u.uid !== HOST_UID) { show("login"); $("loginErr").textContent = "This account isn’t set as the host. Check HOST_UID in firebase-config.js."; return; }
+  code ? openEvent(code) : (show("chooser"), $("subtitle").textContent = "Start a new night or reopen one.");
+});
+$("loginForm").onsubmit = async e => {
+  e.preventDefault(); $("loginErr").textContent = "";
+  try { await signInWithEmailAndPassword(auth, $("email").value, $("pw").value); }
+  catch (err) { $("loginErr").textContent = "That email and password didn’t work."; }
+};
+$("signOutBtn").onclick = () => signOut(auth);
+$("switchEvent").onclick = () => { unsubs.forEach(f => f()); unsubs = []; code = ""; localStorage.removeItem("ssd-host-code"); show("chooser"); };
+
+const CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+$("createForm").onsubmit = async e => {
+  e.preventDefault();
+  let c; do { c = Array.from({ length: 5 }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join(""); } while ((await getDoc(doc(db, "events", c))).exists());
+  await setDoc(doc(db, "events", c), { name: $("cName").value.trim(), roundLen: Math.max(1, +$("cLen").value || 5), status: "checkin", rounds: [], currentRound: 0, roundEndsAt: null, createdAt: serverTimestamp() });
+  openEvent(c);
+};
+$("openForm").onsubmit = async e => {
+  e.preventDefault(); const c = $("oCode").value.trim().toUpperCase();
+  if (!(await getDoc(doc(db, "events", c))).exists()) return toast("No event with that code.");
+  openEvent(c);
+};
+
+function openEvent(c) {
+  code = c; localStorage.setItem("ssd-host-code", c); show("dash");
+  unsubs.forEach(f => f()); unsubs = [];
+  unsubs.push(onSnapshot(doc(db, "events", c), s => { if (!s.exists()) return $("switchEvent").click(); ev = s.data(); renderAll(); }));
+  unsubs.push(onSnapshot(collection(db, "events", c, "guests"), qs => { guests = {}; qs.forEach(d => guests[d.id] = d.data()); assignBadges(); renderAll(); }));
+  unsubs.push(onSnapshot(collection(db, "events", c, "picks"), qs => { picks = {}; qs.forEach(d => picks[d.id] = d.data()); renderAll(); }));
+  unsubs.push(onSnapshot(collection(db, "events", c, "private"), qs => { priv = {}; qs.forEach(d => priv[d.id] = d.data().contact || ""); renderAll(); }));
+}
+
+async function assignBadges() {
+  if (assigning) return;
+  const missing = sorted().filter(([, g]) => g.badge == null);
+  if (!missing.length) return;
+  assigning = true;
+  let next = Math.max(0, ...Object.values(guests).map(g => g.badge || 0)) + 1;
+  try { for (const [id] of missing) await updateDoc(ref("guests", id), { badge: next++ }); } finally { assigning = false; }
+}
+
+function renderAll() {
+  if (!ev) return;
+  $("title").textContent = ev.name;
+  $("subtitle").textContent = { checkin: "Check-in is open.", rounds: "Rounds in progress.", picking: "Guests are making their final picks.", revealed: "Matches have been revealed." }[ev.status];
+  renderJoin(); renderControls(); renderRound(); renderGuests(); renderCards(); renderResults();
+}
+
+function renderJoin() {
+  const url = new URL(`index.html?e=${code}`, location.href).href;
+  let svg = "";
+  try { const qr = qrcode(0, "M"); qr.addData(url); qr.make(); svg = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); } catch (e) {}
+  $("sJoin").innerHTML = `<div class="row" style="gap:22px;align-items:center">
+    <div class="qr" aria-label="QR code to join">${svg}</div>
+    <div class="grow"><div class="g-meta">Event code</div><div class="code">${code}</div>
+    <p class="hint" style="margin:6px 0">Guests scan the code or go to:</p><div class="g-meta" style="overflow-wrap:anywhere">${esc(url)}</div>
+    <button class="small" id="copyLink" style="margin-top:10px">Copy link</button></div></div>`;
+  $("copyLink").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Link copied"));
+}
+
+function renderControls() {
+  const n = Object.keys(guests).length, s = ev.status, total = (ev.rounds || []).length, r = ev.currentRound || 0;
+  const sent = Object.values(picks).filter(p => p.submitted).length;
+  let html = "";
+  if (s === "checkin") html = `<h2>Ready to start?</h2>
+    <p class="hint">${n} checked in. Everyone meeting everyone takes ${maxRounds(n)} rounds, about ${maxRounds(n) * ev.roundLen} minutes. Starting closes check-in.</p>
+    <div class="row" style="align-items:flex-end"><div><label for="rCount">Rounds</label><input id="rCount" type="number" min="1" max="${maxRounds(n) || 1}" value="${maxRounds(n)}" style="width:110px"></div>
+    <div><label for="rLen">Minutes each</label><input id="rLen" type="number" min="1" max="30" value="${ev.roundLen}" style="width:110px"></div>
+    <button class="primary" id="startBtn" ${n < 2 ? "disabled" : ""}>Start round 1</button></div>`;
+  else if (s === "rounds") html = `<h2>Round ${r + 1} of ${total}</h2>
+    <div class="row"><button id="restartBtn">Restart timer</button>
+    ${r < total - 1 ? `<button class="primary" id="nextBtn">Start round ${r + 2}</button>` : `<button class="primary" id="pickBtn">End rounds and open final picks</button>`}</div>`;
+  else if (s === "picking") html = `<h2>Final picks</h2><p class="hint">${sent} of ${n} guests have sent their picks. Enter paper cards below for anyone without a phone.</p>
+    <div class="row"><button id="backBtn">Back to rounds</button><button class="primary" id="revealBtn">Reveal matches</button></div>`;
+  else html = `<h2>Matches revealed</h2><p class="hint">Each guest now sees their mutual matches on their phone. Picks are locked.</p>
+    <div class="row"><button id="rerevealBtn">Recalculate and resend</button></div>`;
+  $("sControls").innerHTML = html;
+
+  const on = (id, fn) => { const b = $(id); if (b) b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { toast("That didn’t go through. Try again."); } b.disabled = false; }; };
+  on("startBtn", async () => {
+    const ids = sorted().map(([id]) => id), len = Math.max(1, +$("rLen").value || 5);
+    if (!confirm(`Start with ${ids.length} guests? Check-in will close.`)) return;
+    await updateDoc(ref(), { rounds: makeRounds(ids, +$("rCount").value || maxRounds(ids.length)), roundLen: len, currentRound: 0, status: "rounds", roundEndsAt: Date.now() + len * 60000 });
+  });
+  on("restartBtn", () => updateDoc(ref(), { roundEndsAt: Date.now() + ev.roundLen * 60000 }));
+  on("nextBtn", () => updateDoc(ref(), { currentRound: r + 1, roundEndsAt: Date.now() + ev.roundLen * 60000 }));
+  on("pickBtn", () => updateDoc(ref(), { status: "picking", roundEndsAt: null }));
+  on("backBtn", () => updateDoc(ref(), { status: "rounds" }));
+  on("revealBtn", async () => { if (confirm("Reveal matches now? Guests can’t change picks after this.")) await reveal(); });
+  on("rerevealBtn", reveal);
+}
+
+function renderRound() {
+  const box = $("sRound");
+  if (ev.status !== "rounds") { box.hidden = true; return; }
+  box.hidden = false;
+  const round = ev.rounds[ev.currentRound || 0];
+  const tables = round.t.filter(p => p.a && p.b), breaks = round.t.filter(p => !p.b).map(p => p.a);
+  box.innerHTML = `${ev.roundEndsAt ? `<div class="timer" data-ends="${ev.roundEndsAt}"></div>` : ""}
+    <div class="tables">${tables.map((p, i) => `<div class="table-card"><div class="tn">Table ${i + 1}</div><div class="pair">${esc(nameOf(p.a))} &amp; ${esc(nameOf(p.b))}</div></div>`).join("")}</div>
+    ${breaks.length ? `<p class="hint" style="margin-top:12px">On a break: ${breaks.map(id => esc(nameOf(id))).join(", ")}</p>` : ""}`;
+}
+
+function renderGuests() {
+  const list = sorted();
+  $("gCount").textContent = `(${list.length})`;
+  $("sGuests").innerHTML = list.length ? list.map(([id, g]) => {
+    const p = picks[id], st = p?.submitted ? `<span class="pill friend">Picks sent</span>` : p ? `<span class="pill wait">Picking</span>` : "";
+    return `<li><span class="badge">${g.badge ?? "…"}</span><div class="g-main"><div class="g-name">${esc(g.name)}${g.pronouns ? ` <span class="g-meta">(${esc(g.pronouns)})</span>` : ""}</div>
+      <div class="g-meta">${priv[id] ? esc(priv[id]) : "No contact shared"}</div></div>${st}
+      <button class="small quiet" data-remove="${id}">Remove</button></li>`;
+  }).join("") : `<li class="empty">Nobody yet. Put the QR code up where people walk in.</li>`;
+  $("sGuests").querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
+    const id = b.dataset.remove; if (!confirm(`Remove ${guests[id]?.name}?`)) return;
+    await Promise.all([deleteDoc(ref("guests", id)), deleteDoc(ref("private", id)), deleteDoc(ref("picks", id))]);
+  });
+}
+
+$("walkinForm").onsubmit = async e => {
+  e.preventDefault();
+  const id = "walkin-" + Math.random().toString(36).slice(2, 10);
+  await setDoc(ref("private", id), { contact: $("wContact").value.trim() });
+  await setDoc(ref("guests", id), { name: $("wName").value.trim(), pronouns: $("wPro").value.trim(), joinedAt: serverTimestamp(), walkin: true });
+  e.target.reset(); toast("Added");
+};
+
+function renderCards() {
+  const sel = $("cardWho"), prev = sel.value, list = sorted();
+  sel.innerHTML = list.length ? list.map(([id, g]) => `<option value="${id}">#${g.badge ?? "?"} ${esc(g.name)}${g.walkin ? " (no phone)" : ""}</option>`).join("") : `<option value="">No guests yet</option>`;
+  if (prev && guests[prev]) sel.value = prev;
+  const who = sel.value;
+  if (!who) { $("cardPanel").innerHTML = ""; return; }
+  const ids = ev.rounds?.length ? metIds(ev.rounds, who) : list.map(([id]) => id).filter(id => id !== who);
+  $("cardPanel").innerHTML = pickListHTML(ids, guests, picks[who]?.picks || {}, "Start the rounds first to see who they met.");
+  $("cardPanel").querySelectorAll("[data-pick]").forEach(b => b.onclick = async () => {
+    const cur = { ...(picks[who]?.picks || {}) };
+    if (b.dataset.v) cur[b.dataset.pick] = b.dataset.v; else delete cur[b.dataset.pick];
+    await setDoc(ref("picks", who), { picks: cur, submitted: true, updatedAt: serverTimestamp() });
+  });
+}
+$("cardWho").onchange = renderCards;
+
+function matchesFor(id, ms) {
+  return ms.filter(m => m.a === id || m.b === id).map(m => { const o = m.a === id ? m.b : m.a;
+    return { name: guests[o]?.name || "", pronouns: guests[o]?.pronouns || "", contact: priv[o] || "", type: m.type }; });
+}
+async function reveal() {
+  const ids = Object.keys(guests), ms = computeMatches(ids, id => picks[id]?.picks || {});
+  const batch = writeBatch(db);
+  ids.forEach(id => batch.set(ref("results", id), { matches: matchesFor(id, ms) }));
+  batch.update(ref(), { status: "revealed" });
+  await batch.commit(); toast(`Sent! ${ms.length} mutual matches.`);
+}
+
+function message(id, ms) {
+  const g = guests[id], mine = matchesFor(id, ms);
+  if (!mine.length) return `Hi ${g.name}! Thank you for coming to ${ev.name}. You didn’t have any mutual matches this time, but we’d love to see you at the next one.`;
+  return `Hi ${g.name}! Thank you for coming to ${ev.name}. Here ${mine.length === 1 ? "is your match" : "are your matches"}:\n` +
+    mine.map(m => `• ${m.name}${m.pronouns ? ` (${m.pronouns})` : ""}, ${m.type} match: ${m.contact || "no contact shared"}`).join("\n");
+}
+function renderResults() {
+  const box = $("sResults");
+  if (ev.status !== "revealed" && ev.status !== "picking") { box.hidden = true; return; }
+  box.hidden = false;
+  const ids = sorted().map(([id]) => id), ms = computeMatches(ids, id => picks[id]?.picks || {});
+  const d = ms.filter(m => m.type === "date").length;
+  box.innerHTML = `<h2>${ev.status === "picking" ? "Matches so far" : "Matches"}</h2>
+    <p class="hint">${d} date ${d === 1 ? "match" : "matches"} and ${ms.length - d} friend ${ms.length - d === 1 ? "match" : "matches"}. Messages below are for guests without a phone, or for a follow-up email.</p>
+    ${ids.map(id => `<div class="match-card"><div class="row"><span class="g-name grow">${esc(nameOf(id))}</span><button class="small" data-copy="${id}">Copy message</button></div>
+      <pre class="msg">${esc(message(id, ms))}</pre></div>`).join("")}`;
+  box.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => navigator.clipboard.writeText(message(b.dataset.copy, ms)).then(() => toast("Copied")));
+}
+</script>
+</body>
+</html>

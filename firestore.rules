@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    // Replace with your host account's User UID (README step 3).
+    function isHost() { return signedIn() && request.auth.uid == 'PASTE_HOST_UID'; }
+    function eventData(e) { return get(/databases/$(database)/documents/events/$(e)).data; }
+    function isGuest(e) { return signedIn() && exists(/databases/$(database)/documents/events/$(e)/guests/$(request.auth.uid)); }
+
+    match /events/{e} {
+      // Anyone with the code can open the event; only the host can list or change events.
+      allow get: if signedIn();
+      allow list, write: if isHost();
+
+      // Names, pronouns and badge numbers: visible to guests of this event.
+      match /guests/{uid} {
+        allow get: if isHost() || isGuest(e) || (signedIn() && request.auth.uid == uid);
+        allow list: if isHost() || isGuest(e);
+        allow create: if isHost() || (
+          signedIn() && request.auth.uid == uid
+          && eventData(e).status == 'checkin'
+          && request.resource.data.keys().hasOnly(['name', 'pronouns', 'joinedAt'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 40
+          && request.resource.data.pronouns is string && request.resource.data.pronouns.size() <= 30
+          && request.resource.data.joinedAt == request.time
+        );
+        allow update, delete: if isHost();
+      }
+
+      // Contact info: only the guest and the host can see it.
+      match /private/{uid} {
+        allow read: if isHost() || (signedIn() && request.auth.uid == uid);
+        allow write: if isHost() || (
+          signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['contact'])
+          && request.resource.data.contact is string
+          && request.resource.data.contact.size() <= 120
+        );
+      }
+
+      // Picks: private to the guest and host. Locked once matches are revealed.
+      match /picks/{uid} {
+        allow read: if isHost() || (signedIn() && request.auth.uid == uid);
+        allow write: if isHost() || (
+          signedIn() && request.auth.uid == uid
+          && eventData(e).status in ['rounds', 'picking']
+          && request.resource.data.keys().hasOnly(['picks', 'submitted', 'updatedAt'])
+        );
+      }
+
+      // Mutual matches, written by the host at reveal time.
+      match /results/{uid} {
+        allow read: if isHost() || (signedIn() && request.auth.uid == uid);
+        allow write: if isHost();
+      }
+    }
+  }
+}
